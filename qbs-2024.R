@@ -13,9 +13,9 @@ library(gt)
 
 
 
-rosters = load_rosters(2024)
+rosters = load_rosters(2025)
 
-nfl_qbs_season = read_csv("coding-projects/nfl-qbs/qb-performances-06-23.csv")[, -1]
+nfl_qbs_season = read_csv("coding-projects/college-football/qb-performances-06-24.csv")[, -1]
 
 qbs_pct = nfl_qbs_season |> select(player, qbr_pct_tot, plays_tot) |> unique()
 
@@ -33,18 +33,15 @@ rosters |> filter(position == "QB") |>
   arrange(team, -qbr_pct_tot) |> 
   print(n = 75)
 
-
-nfl_qbs_season |> filter(player == "Josh Allen")
-
-
 nfl_qbs_season |> 
-  select(player, qbr_pct_tot) |>
-  unique()
+  filter(year == 2024) |> 
+  select(player, qbr_pct_tot:plays_tot) |> 
+  unique() |> 
+  arrange(-qbr_pct_tot) |> 
+  filter(plays_tot >= 1000) |> print(n = 15)
 
 
-nfl_qbs_season |> 
-  filter(player == "Trevor Lawrence") |>
-  arrange(qbr_pct)
+
 
 nfl_qbs_season |> 
   group_by(player) |> 
@@ -133,8 +130,21 @@ nfl_qbs_season |>
 
 
 # Building the Model ------------------------------------------------------
+nfl_qbs_season |> filter(player == "Aaron Brooks")
 
+nfl_qbs_season |> filter(!is.na(qbr_pct)) |> 
+  group_by(player) |> 
+  arrange(year) |> 
+  mutate(season = row_number())
 
+nfl_qbs_season |> filter(!is.na(qbr_pct)) |> 
+  group_by(player) |> 
+  arrange(year) |> 
+  mutate(season = row_number()) |> 
+  # filter(season >= 2) |> 
+  mutate(qbr_pct_2 = qbr_pct[season == 2][1],
+         qbr_pct_1 = qbr_pct[season == 1][1],
+         qbr_pct_jump = qbr_pct_2 - qbr_pct_1)
 
 next_year_df1 = nfl_qbs_season |>
   filter(!is.na(qbr_pct)) |> 
@@ -161,29 +171,37 @@ next_year_df1 = nfl_qbs_season |>
          ptsr_min = cummin(pressure_to_sack_rate),
          dropbacks_min = cummin(dropbacks),
          
-         first_year = min(year),
-         qbr_pct_first = qbr_pct[year == first_year],
-         mean_epa_first = mean_epa[year == first_year],
-         grade_first = grades_offense[year == first_year],
-         cpoe_first = cpoe[year == first_year],
-         ptsr_first = pressure_to_sack_rate[year == first_year],
-         dropbacks_first = dropbacks[year == first_year],
+         season = row_number(),
+         # first_year = min(year),
+         qbr_pct_first = qbr_pct[season == 1],
+         mean_epa_first = mean_epa[season == 1],
+         grade_first = grades_offense[season == 1],
+         cpoe_first = cpoe[season == 1],
+         ptsr_first = pressure_to_sack_rate[season == 1],
+         dropbacks_first = dropbacks[season == 1],
+         
+         # qbr_pct_second = qbr_pct[season == 2],
+         qbr_pct_2_jump = qbr_pct[season == 2][1] - qbr_pct_first,
+         qbr_pct_2_jump = if_else(is.na(qbr_pct_2_jump), 0, qbr_pct_2_jump),
+         qbr_pct_3_jump = qbr_pct[season == 3][1] - qbr_pct[season == 2][1],
+         qbr_pct_3_jump = if_else(is.na(qbr_pct_3_jump), 0, qbr_pct_3_jump),
          
          # Add median year other pcts?
+         # Add in Age
          
-         plays_tot = cumsum(dropbacks)) |>   
-  # left_join(rookie_df, by = "player") |> 
+         plays_tot = cumsum(dropbacks)) |> 
+  # left_join(rookie_df, by = "player") |>
   mutate(next_qbr_pct = case_when(
     (lead(player) == player) ~ lead(qbr_pct),
     .default = NA
   )) |>
   filter(!is.na(next_qbr_pct)) |>
-  ungroup() |>
-  select(-c(player, year, qbr_pct_tot, mean_epa_tot, cpoe_tot, ptsr_tot, first_year))
+  ungroup() |> 
+  select(-c(player, year, qbr_pct_tot, mean_epa_tot, cpoe_tot, ptsr_tot))
+
+nfl_qbs_season |> filter(player == "Josh Allen") |> arrange(year)
 
 
-
-next_year_df1 |> View()
 
 
 # ggplot(next_year_df1, aes(x = plays_tot, y = next_qbr_pct)) +
@@ -228,8 +246,6 @@ ggplot(cor_tbl, aes(x = abs(next_qbr_pct), y = reorder(names, abs(next_qbr_pct))
 # Train/Test
 
 n = nrow(next_year_df1)
-
-
 
 set.seed(123)
 
@@ -281,88 +297,73 @@ kmeans_result$withinss
 
 
 
-# Linear Regression
+# Linear Regression (Models 1 & 2)
 
 
-## Model 1
-m1 = lm(next_qbr_pct ~ ., data = train_data)
+m1a = lm(next_qbr_pct ~ 1, data = train_data)
+summary(m1a)
+
+m1b = lm(next_qbr_pct ~ ., data = train_data)
+summary(m1b)
+
+
+m1 = step(m1a, direction = "both", scope = formula(m1b), trace = 0)
 summary(m1)
-# r^2 = 0.32
+## r^2 = 0.54
 
 pred = predict(m1, newdata = test_data)
 
 sqrt(mean((pred - test_data |> select(next_qbr_pct) |> pull())^2))
-# Off by 0.234
+## 0.22
+
+sqrt(vif(m1))
+## Nope
+
+
+## All
+par(mfrow = c(2, 2))
+plot(m1)
+
+## HIPs
+sort(cooks.distance(m1), decreasing = TRUE)[1:10]
+### All good, since less than 1.
+
+## Constant Variance
+bptest(m1)
+### With the p-value = .78 > .05 = $\alpha$, we fail to reject the null and conclude the constant variance assumption is satisfied.
+
+## Normaility, n < 50
+shapiro.test(m1$residuals)
+### With the p-value = .72 > .05 = $\alpha$, we fail to reject the null and conclude the normality assumption is satisfied.
+
+
+# Nope!!!
 
 
 
-## Model 2
-m2 = step(m1, trace = 0)
+# Model 2 (Last)
+m2a = lm(next_qbr_pct ~ 1, data = train_data |> select(qbr_pct:dropbacks, next_qbr_pct))
+summary(m2a)
+
+m2b = lm(next_qbr_pct ~ ., data = train_data |> select(qbr_pct:dropbacks, next_qbr_pct))
+summary(m2b)
+
+
+m2 = step(m2a, direction = "both", scope = formula(m2b), trace = 0)
 summary(m2)
-# r^2 = 0.34
+## r^2 = 0.33
 
 pred = predict(m2, newdata = test_data)
 
 sqrt(mean((pred - test_data |> select(next_qbr_pct) |> pull())^2))
-# Off by 0.235
+## 0.25
 
 sqrt(vif(m2))
+# Okay
 
 par(mfrow = c(2, 2))
 plot(m2)
-# Diagnostics NOT ok!
-
-
-
-# Model 3 (Last)
-m3 = lm(next_qbr_pct ~ ., data = train_data |> select(qbr_pct:dropbacks, next_qbr_pct))
-summary(m3)
-# r^2 = 0.28
-
-pred = predict(m3, newdata = test_data)
-
-sqrt(mean((pred - test_data |> select(next_qbr_pct) |> pull())^2))
-# Off by 0.236
-
-m4 = step(m3, trace = 0)
-summary(m4)
-# r^2 = 0.29
-
-pred = predict(m4, newdata = test_data)
-
-sqrt(mean((pred - test_data |> select(next_qbr_pct) |> pull())^2))
-# Off by 0.236
-
-sqrt(vif(m4))
-
-par(mfrow = c(2, 2))
-plot(m4)
 # Diagnostics ok!
-
-
-
-
-# m4 = lm(next_qbr_pct ~ ., data = train_data |> select(mean_epa_tot:plays_tot, next_qbr_pct))
-# summary(m4)
-# 
-# pred = predict(m4, newdata = test_data)
-# 
-# sqrt(mean((pred - test_data |> select(next_qbr_pct) |> pull())^2))
-# # Off by 0.240
-# 
-# sqrt(vif(m4))
-# 
-# 
-# m5 = step(m4, trace = 0)
-# summary(m5)
-# 
-# pred = predict(m5, newdata = test_data)
-# 
-# sqrt(mean((pred - test_data |> select(next_qbr_pct) |> pull())^2))
-# # 0.241
-# 
-# sqrt(vif(m5))
-
 
 
 ## LASSO
@@ -394,7 +395,7 @@ coefficients
 pred = predict(lasso_model, newx = x_test, s = cv_lasso$lambda.min)
 
 sqrt(mean((pred - y_test)^2))
-# Off by .233
+# Off by .22
 
 
 # RIDGE
@@ -414,7 +415,7 @@ final_model$beta[, 1] |> abs() |> sort(decreasing = TRUE)
 pred = predict(final_model, newx = x_test)
 
 sqrt(mean((pred - y_test)^2))
-# RMSE of .233
+# RMSE of .22
 # Reduced collinearity effects
 
 
@@ -439,7 +440,7 @@ for (i in 1:100) {
 }
 
 min(error)
-## 0.232
+## 0.24
 
 which.min(error)
 
@@ -481,7 +482,7 @@ best_tuning
 # Extract the random forest model with the best tuning parameters
 best_rf_model = tuned_models[[best_index]]
 best_rf_model
-# r^2 = 0.32
+# r^2 = 0.44
 
 # Calculate the variable importance for the best model
 variable_importance = vimp(best_rf_model)
@@ -504,7 +505,7 @@ ggplot(rf_weights, aes(x = weight, y = reorder(names, weight))) +
 pred_rf = predict(best_rf_model, newdata = as.data.frame(test_data))
 
 sqrt(mean((pred_rf$predicted - as.vector(y_test))^2))
-## 0.226
+## 0.22
 
 
 
@@ -539,7 +540,7 @@ xgb.fit = xgb.train(params, train_data_xgb, num_round)
 pred_xgb = predict(xgb.fit, newdata = test_data_xgb)
 
 sqrt(mean((pred_xgb - as.vector(y_test))^2))
-## Not awful (0.255)
+## Not awful
 
 
 
@@ -593,7 +594,7 @@ for (i in 1:nrow(tuning_grid2)) {
 
 # Best Error
 results[which.min(best_error), ]
-## 0.227
+## 0.22
 
 
 
@@ -602,7 +603,7 @@ results[which.min(best_error), ]
 # Predictions! ------------------------------------------------------------
 
 
-qbs_2023 = nfl_qbs_season |>
+qbs_2024 = nfl_qbs_season |>
   filter(!is.na(qbr_pct)
          # , !is.na(qbr_pct_tot)
          ) |> 
@@ -636,58 +637,58 @@ qbs_2023 = nfl_qbs_season |>
          ptsr_first = pressure_to_sack_rate[year == first_year],
          dropbacks_first = dropbacks[year == first_year],
          
+         season = row_number(),
+         qbr_pct_2_jump = qbr_pct[season == 2][1] - qbr_pct_first,
+         qbr_pct_2_jump = if_else(is.na(qbr_pct_2_jump), 0, qbr_pct_2_jump),
+         qbr_pct_3_jump = qbr_pct[season == 3][1] - qbr_pct[season == 2][1],
+         qbr_pct_3_jump = if_else(is.na(qbr_pct_3_jump), 0, qbr_pct_3_jump),
+         
          plays_tot = cumsum(dropbacks)) |> 
   ungroup() |> 
-  filter((year == 2023 | (player == "Aaron Rodgers" & year == 2022) |
-                        (player == "Sam Darnold" & year == 2022) |
-                        (player == "Jacoby Brissett" & year == 2022) |
-                        (player == "Marcus Mariota"& year == 2022) |
-                        (player == "Drew Lock" & year == 2020)) &
-                        (!is.na(qbr_pct_tot) | player == "Will Levis" | player == "Aidan O'Connell")) |>
+  filter(year == 2024) |>
   arrange(-qbr_pct_tot)
 
-qbs_2023 |> View()
+qbs_2024 |> View()
 
 
 
 
 
-# pred_2024 = predict(xgb.fit, newdata = xgb.DMatrix(as.matrix(qbs_2023 |> select(-c(player, year, qbr_pct_tot, mean_epa_tot, cpoe_tot, ptsr_tot)))))
 
-pred_2024 = predict(best_rf_model, newdata = as.data.frame(qbs_2023))
-pred_2024$predicted
+
+
+pred_2025 = predict(best_rf_model, newdata = as.data.frame(qbs_2024))
 
 qb_teams = rosters |> filter(position == "QB") |> select(full_name, team)
 
-
-qbs_2024 = qbs_2023 |>
-  mutate(pred_24 = pred_2024$predicted) |> 
-  select(player, pred_24, qbr_pct_tot, mean_epa_tot, grade_avg, everything()) |> 
-  arrange(-pred_24) |> 
+qbs_2025 = qbs_2024 |>
+  mutate(pred_25 = pred_2025$predicted) |> 
+  select(player, pred_25, qbr_pct_tot, mean_epa_tot, grade_avg, everything()) |> 
+  arrange(-pred_25) |> 
   left_join(qb_teams, by = c("player" = "full_name")) |> 
   filter(!is.na(team))
 
-qbs_2024 |> 
-  View()
+qbs_2025 |> 
+  filter(plays_tot >= 1500) |> View()
 
 
 
   
 # Projections vs. Career
-ggplot(qbs_2024 |>  filter(!is.na(qbr_pct_tot)), aes(x = qbr_pct_tot, y = pred_24)) +
+ggplot(qbs_2025 |>  filter(!is.na(qbr_pct_tot)), aes(x = qbr_pct_tot, y = pred_25)) +
   # geom_point(aes(color = team, fill = team)) +
   stat_smooth(formula = y ~ x, method = 'lm', geom = 'line', se = FALSE, color='gray') +
   geom_text_repel(aes(label = player), size = 1.5) +
   labs(
-    title = "Career QB Play vs. 2024 Projections",
-    subtitle = "23' dropbacks >= 150, Rodgers, Darnold, Brissett, Mariota, or Lock  |  career dropbacks >= 400  |  percentile = 50-50 compositie of epa/play & pff grade  |  projections use random forest model",
+    title = "Career QB Play vs. 2025 Projections",
+    subtitle = "150+ 24' dropbacks  |  400 + career dropbacks  |  percentile = 50-50 compositie of epa/play & pff grade  |  projections use random forest model",
     caption = "By: Sam Burch  |  Data @nflfastR & @pff (since 2006)",
     x = "Career Percentile",
-    y = "2024 Percentile Projections"
+    y = "2025 Percentile Projections"
   ) +
   # nflplotR::scale_fill_nfl(alpha = .8) +
   # nflplotR::scale_color_nfl(type = "primary") +
-  nflplotR::geom_mean_lines(aes(x0 = qbr_pct_tot, y0 = pred_24, alpha = .8)) +
+  nflplotR::geom_mean_lines(aes(x0 = qbr_pct_tot, y0 = pred_25, alpha = .8)) +
   theme(
     panel.grid.major = element_blank(),
     panel.grid.minor = element_blank(),
@@ -707,15 +708,16 @@ ggplot(qbs_2024 |>  filter(!is.na(qbr_pct_tot)), aes(x = qbr_pct_tot, y = pred_2
 
 
 # Young QBs
-qbs_2023 |> 
+qbs_2025 |> 
   filter(plays_tot <= 1500) |> 
   select(player, qbr_pct_tot:plays_tot) |> 
   arrange(-grade_avg)
 
+qbs_2025
 
-ggplot(qbs_2024 |> filter(!is.na(qbr_pct_tot)), aes(x = grade_avg, y = mean_epa_tot)) +
-  geom_point(alpha = .3, color = "grey20") +
-  geom_point(aes(color = team, fill = team), data = qbs_2024 |> filter(plays_tot <= 1500)) +
+ggplot(qbs_2025 |> filter(!is.na(qbr_pct_tot)), aes(x = grade_avg, y = mean_epa_tot)) +
+  # geom_point(alpha = .3, color = "grey20") +
+  # geom_point(aes(color = team, fill = team), data = qbs_2024 |> filter(plays_tot <= 1500)) +
   stat_smooth(formula = y ~ x, method = 'lm', geom = 'line', se = FALSE, color='gray') +
   geom_text_repel(aes(label = player), size = 2, data = qbs_2024 |> filter(plays_tot <= 1500)) +
   # scale_x_continuous(breaks = seq(0, 120, 10)) +
